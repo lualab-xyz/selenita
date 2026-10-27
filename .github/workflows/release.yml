@@ -1,0 +1,112 @@
+# Release pipeline for the public alpha channel.
+#
+# Trigger: pushing a tag `v*` (e.g. v0.1.0a1) to this repository. Versioning
+# policy and the publish flow live in the private dev repo (scripts/
+# publish_alpha.py + .context/decisions.md, D017).
+#
+# Produces: wheel + sdist built on Linux, a wheel-install smoke on a fresh
+# venv for each supported platform (linux-x64, windows-x64), and a GitHub
+# Release attaching wheel, sdist, install scripts and SHA256SUMS.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Stamp version from tag
+        run: python scripts/set_version.py "${GITHUB_REF_NAME#v}"
+
+      - name: Build wheel and sdist
+        run: |
+          python -m pip install --quiet --upgrade build
+          python -m build
+          ls -l dist/
+
+      - name: Smoke (linux) — fresh venv, wheel install, entry point
+        run: |
+          python -m venv .smoke
+          .smoke/bin/python -m pip install --quiet dist/selenita-*.whl
+          .smoke/bin/selenita --help > /dev/null
+          test "$(.smoke/bin/selenita --version)" = "selenita ${GITHUB_REF_NAME#v}"
+
+      - name: Upload dist
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  smoke-windows:
+    runs-on: windows-latest
+    needs: build-linux
+    steps:
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Smoke (windows) — fresh venv, wheel install, entry point
+        shell: pwsh
+        run: |
+          python -m venv .smoke
+          .smoke/Scripts/python -m pip install --quiet (Get-Item dist/selenita-*.whl).FullName
+          $v = (.smoke/Scripts/selenita.exe --version).Trim()
+          if ($v -ne "selenita $($env:GITHUB_REF_NAME.TrimStart('v'))") { throw "version mismatch: $v" }
+          .smoke/Scripts/selenita.exe --help | Out-Null
+
+  publish:
+    runs-on: ubuntu-latest
+    needs: [build-linux, smoke-windows]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download dist
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Checksums
+        run: sh -c 'cd dist && sha256sum * > SHA256SUMS'
+
+      - name: Create GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.whl
+            dist/*.tar.gz
+            dist/SHA256SUMS
+            install.sh
+            install.ps1
+          prerelease: true
+          body: |
+            Alpha build of `${{ github.ref_name }}`.
+
+            Install:
+            - **Linux/macOS**: `curl -fsSL https://raw.githubusercontent.com/lualab-xyz/selenita/alpha-1/install.sh | bash`
+            - **Windows (PowerShell)**: `irm https://raw.githubusercontent.com/lualab-xyz/selenita/alpha-1/install.ps1 | iex`
+            - **Manual**: download the wheel below and run `pip install <wheel path>`
+
+            Requires Python >= 3.11. Note the LLM endpoint is not configured by
+            default — set `SELENITA_*` environment variables (see README).
