@@ -16,7 +16,7 @@ import importlib.metadata
 from dataclasses import replace
 
 from selenita.acp_server import runner
-from selenita.cli import terminal, tui
+from selenita.cli import terminal
 from selenita.config import Settings, setup_logging
 
 
@@ -110,6 +110,10 @@ def main(argv: list[str] | None = None) -> int:
         settings = replace(settings, mcp_cmd=args.mcp_cmd)
     if prompt is not None:
         return terminal.run_terminal_prompt(prompt, args.session_id, settings)
+    # Imported lazily only when the TUI actually runs: selenita.cli.tui pulls in
+    # termios/tty (POSIX-only) and would break entry points on Windows otherwise.
+    from selenita.cli import tui
+
     return tui.run_interactive(args.session_id, settings=settings)
 
 

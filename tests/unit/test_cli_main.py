@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib.metadata
+import subprocess
+import sys
 
 import pytest
 
@@ -51,3 +53,14 @@ def test_invalid_flag_combinations_fail_fast(
     with pytest.raises(SystemExit) as exc:
         main(argv)
     assert exc.value.code == 2  # usage on stderr through parser.error
+
+
+def test_cli_import_does_not_pull_the_tui_module() -> None:
+    # selenita.cli.tui imports termios/tty (POSIX-only). The wheel smoke on Windows
+    # runs `selenita --version` / `--help`, so the CLI must import the TUI lazily
+    # (D012: same core, per-mode dispatch) — regression check in a fresh interpreter.
+    code = (
+        "import sys; import selenita.cli.main as m; "
+        "sys.exit(0 if 'selenita.cli.tui' not in sys.modules and hasattr(m, 'main') else 1)"
+    )
+    subprocess.run([sys.executable, "-c", code], check=True)
