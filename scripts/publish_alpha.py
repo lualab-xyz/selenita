@@ -135,6 +135,11 @@ def main(argv: list[str] | None = None) -> int:
         "--skip-tag", action="store_true", help="push the squash without creating a release tag"
     )
     parser.add_argument(
+        "--force",
+        action="store_true",
+        help="force-replace the alpha-1 history (first publish or fix-ups; reuses are non-forced)",
+    )
+    parser.add_argument(
         "--dry-run", action="store_true", help="plan only: no git writes, no pushes"
     )
     args = parser.parse_args(argv)
@@ -211,13 +216,35 @@ def main(argv: list[str] | None = None) -> int:
             print("dry-run: nothing published")
             return 0
 
-        # 5. Materialize the squashed commit in a throwaway worktree.
-        worktree = repo_root.parent / "selenita-publish-worktree"
+        # 5. Materialize the squashed commit in a throwaway worktree inside the
+        #    workspace, pre-created with wide permissions: in this dev environment the
+        #    sandboxed git writes to the worktree with a different uid, and the
+        #    worktree path must already exist for it to be accepted. The worktree's
+        #    git operations also need `safe.directory` on the command line.
+
+        worktree = repo_root / ".publish-wt"
+        # Relative -C path only: in this dev environment the sandboxed git cannot
+        # chdir into agent-side bind mounts (/workspace) — a relative worktree path
+        # under the repo root resolves on both sides.
+        GIT_WT = ("git", "-c", "safe.directory=*", "-C", ".publish-wt")  # noqa: N806
+        # Start clean: stale registrations, stale dir, stale local mirror branch.
+        run("git", "worktree", "remove", "--force", ".publish-wt", check=False)
+        run("git", "worktree", "prune")
+        shutil.rmtree(worktree, ignore_errors=True)
+        run("git", "branch", "-D", "mirror/alpha-1", check=False)
+        worktree.mkdir()
+        os.chmod(worktree, 0o777)  # unmasked: the sandboxed git must write into it
         if public_tip:
             run("git", "fetch", "-q", args.remote, "+alpha-1:mirror/alpha-1")
-            run("git", "worktree", "add", "-f", "-B", "mirror/alpha-1", str(worktree), public_tip)
+            run(
+                "git", "worktree", "add", "--force", "-B", "mirror/alpha-1",
+                ".publish-wt", public_tip,
+            )
         else:
-            run("git", "worktree", "add", "--orphan", "-b", "mirror/alpha-1", str(worktree))
+            run(
+                "git", "worktree", "add", "--force", "--orphan",
+                "-b", "mirror/alpha-1", ".publish-wt",
+            )
 
         try:
             # Replace the worktree content wholesale with the staged tree.
@@ -236,19 +263,25 @@ def main(argv: list[str] | None = None) -> int:
                 "",
                 "Co-authored-by: Copilot <223556219+Copilot@users.noreply.github.com>",
             ]
-            run("git", "-C", str(worktree), "add", "-A")
-            run("git", "-C", str(worktree), "commit", "-q", "-m", "\n".join(message_lines))
-            published_sha = run("git", "-C", str(worktree), "rev-parse", "HEAD")
+            run(*GIT_WT, "add", "-A")
+            run(*GIT_WT, "commit", "-q", "-m", "\n".join(message_lines))
+            published_sha = run(*GIT_WT, "rev-parse", "HEAD")
 
-            # 6. Push branch first (so the tag commit has its parents), then the tag.
-            run("git", "push", args.remote, "mirror/alpha-1:alpha-1")
-            print(f"pushed alpha-1 → {published_sha[:12]}")
+            # 6. Push branch first (the tag needs its parent commit), then the tag.
+            push_args = ["git", "push"]
+            if args.force:
+                push_args.append("--force")
+            run(*push_args, args.remote, "mirror/alpha-1:alpha-1")
+            print(f"pushed alpha-1 → {published_sha[:12]}{' (forced)' if args.force else ''}")
             if not args.skip_tag:
                 run("git", "tag", "-f", f"v{next_version}", published_sha)
                 run("git", "push", args.remote, f"v{next_version}")
                 print(f"pushed tag v{next_version} — release pipeline will build the assets")
         finally:
-            run("git", "worktree", "remove", "--force", str(worktree))
+            run("git", "worktree", "remove", "--force", ".publish-wt", check=False)
+            run("git", "worktree", "prune")
+            run("chmod", "-R", "a+rwX", str(worktree), check=False)
+            shutil.rmtree(worktree, ignore_errors=True)
 
         print("done")
         return 0

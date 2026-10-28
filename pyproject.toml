@@ -6,6 +6,10 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
     "agent-client-protocol>=0.3",
+    # Runtime-required: imported top-level by core/llm.py and acp_server (MAF core
+    # plus the OpenAI provider used by the default Responses-based LlmCore).
+    "agent-framework-core>=1.23",
+    "agent-framework-openai>=1.17",
 ]
 
 [project.scripts]
